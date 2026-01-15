@@ -1,0 +1,941 @@
+from OpenGL.GL import *
+from OpenGL.GLUT import *
+from OpenGL.GLU import *
+import time
+import random
+import math
+import sys
+
+camera_offset = (0, -150, 50)
+fovY = 70
+ROAD_WIDTH = 400
+ROAD_LENGTH = 20000
+lanes = [-150, -50, 50, 150]
+player_lane = 0
+player_speed = 40.0
+max_speed = 120.0
+min_speed = 40.0
+acceleration_rate = 0.5
+deceleration_rate = 0.5
+accelerating = False
+decelerating = False
+paused = False
+camera_mode = 1
+player_pos = [lanes[0], -ROAD_LENGTH / 2 + 500, 0]
+cars = []
+time_elapsed = 0.0
+next_spawn = random.uniform(0.5, 1.5)
+last_time = None
+distance_traveled = 0.0
+score = 0
+high_score = 0
+game_over = False
+GLOBAL_QUADRIC = None
+boost_active = False
+boost_multiplier = 1.8
+fuel_capacity = 100.0
+fuel_amount = 100.0
+fuel_drain_rate = 25.0
+fuel_refill_delay = 3.0
+fuel_refill_timer = 0.0
+current_environment = "marine_drive"
+environment_change_time = 0.0
+environment_duration = 60.0
+car_types = ['bus1', 'bus2', 'sedan1', 'sedan2', 'sedan3', 'sedan4', 'truck1', 'truck2']
+colors = [(1,0,0), (0,1,0), (0,0,1), (1,1,0), (1,0,1), (0,1,1), (0.5,0.5,0.5)]
+
+def init_lighting():
+    glEnable(GL_LIGHTING)
+    glEnable(GL_LIGHT0)
+    glLightfv(GL_LIGHT0, GL_POSITION, (0, player_pos[1] + 1000, 500, 1))
+    if current_environment == "night_rain":
+        glLightfv(GL_LIGHT0, GL_AMBIENT, (0.05, 0.05, 0.08, 1))
+        glLightfv(GL_LIGHT0, GL_DIFFUSE, (0.2, 0.2, 0.25, 1))
+    else:
+        glLightfv(GL_LIGHT0, GL_AMBIENT, (0.2, 0.2, 0.2, 1))
+        glLightfv(GL_LIGHT0, GL_DIFFUSE, (0.8, 0.8, 0.8, 1))
+    glEnable(GL_COLOR_MATERIAL)
+    glColorMaterial(GL_FRONT, GL_AMBIENT_AND_DIFFUSE)
+    glEnable(GL_NORMALIZE)
+
+def draw_text(x, y, text, font=GLUT_BITMAP_HELVETICA_18):
+    glColor3f(1, 1, 1)
+    glMatrixMode(GL_PROJECTION)
+    glPushMatrix()
+    glLoadIdentity()
+    gluOrtho2D(0, 1000, 0, 800)
+    glMatrixMode(GL_MODELVIEW)
+    glPushMatrix()
+    glLoadIdentity()
+    glRasterPos2f(x, y)
+    for ch in text:
+        glutBitmapCharacter(font, ord(ch))
+    glPopMatrix()
+    glMatrixMode(GL_PROJECTION)
+    glPopMatrix()
+    glMatrixMode(GL_MODELVIEW)
+
+def draw_road():
+    if current_environment == "ice_hill":
+        glColor3f(0.8, 0.8, 0.9)
+    elif current_environment == "desert":
+        glColor3f(0.7, 0.6, 0.4)
+    elif current_environment == "night_rain":
+        glColor3f(0.15, 0.15, 0.2)
+    else:
+        glColor3f(0.3, 0.3, 0.3)
+    glBegin(GL_QUADS)
+    glNormal3f(0, 0, 1)
+    glVertex3f(-ROAD_WIDTH / 2, player_pos[1] - ROAD_LENGTH / 2, 0)
+    glVertex3f(ROAD_WIDTH / 2, player_pos[1] - ROAD_LENGTH / 2, 0)
+    glVertex3f(ROAD_WIDTH / 2, player_pos[1] + ROAD_LENGTH / 2, 0)
+    glVertex3f(-ROAD_WIDTH / 2, player_pos[1] + ROAD_LENGTH / 2, 0)
+    glEnd()
+    glLineWidth(5)
+    glColor3f(1, 1, 1)
+    dash_length, gap = 50, 50
+    line_positions = [-100, 0, 100]
+    y_start = math.floor((player_pos[1] - ROAD_LENGTH / 2) / (dash_length + gap)) * (dash_length + gap)
+    for lx in line_positions:
+        y = y_start
+        while y < player_pos[1] + ROAD_LENGTH / 2:
+            glBegin(GL_LINES)
+            glVertex3f(lx, y, 0.1)
+            glVertex3f(lx, y + dash_length, 0.1)
+            glEnd()
+            y += dash_length + gap
+    glColor3f(1, 1, 0)
+    glBegin(GL_LINES)
+    glVertex3f(0, player_pos[1] - ROAD_LENGTH / 2, 0.1)
+    glVertex3f(0, player_pos[1] + ROAD_LENGTH / 2, 0.1)
+    glEnd()
+
+def draw_environment():
+    if current_environment == "ice_hill":
+        glBegin(GL_QUADS)
+        glColor3f(1.0, 1.0, 1.0)
+        glNormal3f(0, 0, 1)
+        glVertex3f(-ROAD_WIDTH / 2 - 1000, player_pos[1] - ROAD_LENGTH / 2, 0)
+        glVertex3f(-ROAD_WIDTH / 2, player_pos[1] - ROAD_LENGTH / 2, 0)
+        glVertex3f(-ROAD_WIDTH / 2, player_pos[1] + ROAD_LENGTH / 2, 0)
+        glVertex3f(-ROAD_WIDTH / 2 - 1000, player_pos[1] + ROAD_LENGTH / 2, 0)
+        glVertex3f(ROAD_WIDTH / 2, player_pos[1] - ROAD_LENGTH / 2, 0)
+        glVertex3f(ROAD_WIDTH / 2 + 1000, player_pos[1] - ROAD_LENGTH / 2, 0)
+        glVertex3f(ROAD_WIDTH / 2 + 1000, player_pos[1] + ROAD_LENGTH / 2, 0)
+        glVertex3f(ROAD_WIDTH / 2, player_pos[1] + ROAD_LENGTH / 2, 0)
+        glEnd()
+        hill_spacing = 500
+        y_start = math.floor((player_pos[1] - 1000) / hill_spacing) * hill_spacing
+        for i in range(10):
+            hill_y = y_start + i * hill_spacing
+            glBegin(GL_TRIANGLES)
+            glColor3f(0.9, 0.9, 1.0)
+            glNormal3f(0, 0, 1)
+            glVertex3f(ROAD_WIDTH / 2 + 200, hill_y, 0)
+            glVertex3f(ROAD_WIDTH / 2 + 600, hill_y, 200)
+            glVertex3f(ROAD_WIDTH / 2 + 1000, hill_y, 0)
+            glVertex3f(-ROAD_WIDTH / 2 - 200, hill_y, 0)
+            glVertex3f(-ROAD_WIDTH / 2 - 600, hill_y, 200)
+            glVertex3f(-ROAD_WIDTH / 2 - 1000, hill_y, 0)
+            glEnd()
+    elif current_environment == "desert":
+        glBegin(GL_QUADS)
+        glColor3f(0.8, 0.7, 0.4)
+        glNormal3f(0, 0, 1)
+        glVertex3f(-ROAD_WIDTH / 2 - 1000, player_pos[1] - ROAD_LENGTH / 2, 0)
+        glVertex3f(-ROAD_WIDTH / 2, player_pos[1] - ROAD_LENGTH / 2, 0)
+        glVertex3f(-ROAD_WIDTH / 2, player_pos[1] + ROAD_LENGTH / 2, 0)
+        glVertex3f(-ROAD_WIDTH / 2 - 1000, player_pos[1] + ROAD_LENGTH / 2, 0)
+        glVertex3f(ROAD_WIDTH / 2, player_pos[1] - ROAD_LENGTH / 2, 0)
+        glVertex3f(ROAD_WIDTH / 2 + 1000, player_pos[1] - ROAD_LENGTH / 2, 0)
+        glVertex3f(ROAD_WIDTH / 2 + 1000, player_pos[1] + ROAD_LENGTH / 2, 0)
+        glVertex3f(ROAD_WIDTH / 2, player_pos[1] + ROAD_LENGTH / 2, 0)
+        glEnd()
+        cactus_spacing = 400
+        for side in [-1, 1]:
+            cactus_x = side * (ROAD_WIDTH / 2 + 100)
+            y_start = math.floor((player_pos[1] - 1000) / cactus_spacing) * cactus_spacing
+            for i in range(10):
+                cactus_y = y_start + i * cactus_spacing + random.uniform(-50, 50)
+                glPushMatrix()
+                glTranslatef(cactus_x + random.uniform(-20, 20), cactus_y, 0)
+                glColor3f(0.2, 0.5, 0.2)
+                glRotatef(90, 1, 0, 0)
+                gluCylinder(GLOBAL_QUADRIC, 10, 10, 80, 10, 10)
+                glPopMatrix()
+    elif current_environment == "night_rain":
+        glBegin(GL_QUADS)
+        glColor3f(0.2, 0.2, 0.25)
+        glNormal3f(0, 0, 1)
+        glVertex3f(-ROAD_WIDTH / 2 - 1000, player_pos[1] - ROAD_LENGTH / 2, 0)
+        glVertex3f(-ROAD_WIDTH / 2, player_pos[1] - ROAD_LENGTH / 2, 0)
+        glVertex3f(-ROAD_WIDTH / 2, player_pos[1] + ROAD_LENGTH / 2, 0)
+        glVertex3f(-ROAD_WIDTH / 2 - 1000, player_pos[1] + ROAD_LENGTH / 2, 0)
+        glVertex3f(ROAD_WIDTH / 2, player_pos[1] - ROAD_LENGTH / 2, 0)
+        glVertex3f(ROAD_WIDTH / 2 + 1000, player_pos[1] - ROAD_LENGTH / 2, 0)
+        glVertex3f(ROAD_WIDTH / 2 + 1000, player_pos[1] + ROAD_LENGTH / 2, 0)
+        glVertex3f(ROAD_WIDTH / 2, player_pos[1] + ROAD_LENGTH / 2, 0)
+        glEnd()
+        glPushAttrib(GL_ENABLE_BIT | GL_COLOR_BUFFER_BIT)
+        glDisable(GL_LIGHTING)
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE)
+        glColor4f(0.5, 0.5, 0.8, 0.6)
+        rain_spacing = 50
+        y_start = math.floor((player_pos[1] - 1000) / rain_spacing) * rain_spacing
+        for i in range(40):
+            for j in range(-20, 21):
+                x = j * 50 + random.uniform(-25, 25)
+                y = y_start + i * rain_spacing + random.uniform(-25, 25)
+                z = random.uniform(50, 200)
+                glBegin(GL_LINES)
+                glVertex3f(x, y, z)
+                glVertex3f(x - 10, y - 25, z - 15)
+                glEnd()
+        glPopAttrib()
+    else:
+        glBegin(GL_QUADS)
+        glColor3f(0, 0.5, 1)
+        glNormal3f(0, 0, 1)
+        glVertex3f(-ROAD_WIDTH / 2 - 1000, player_pos[1] - ROAD_LENGTH / 2, -10)
+        glVertex3f(-ROAD_WIDTH / 2, player_pos[1] - ROAD_LENGTH / 2, 0)
+        glVertex3f(-ROAD_WIDTH / 2, player_pos[1] + ROAD_LENGTH / 2, 0)
+        glVertex3f(-ROAD_WIDTH / 2 - 1000, player_pos[1] + ROAD_LENGTH / 2, -10)
+        glEnd()
+        glBegin(GL_QUADS)
+        glColor3f(0.9, 0.8, 0.6)
+        glNormal3f(0, 0, 1)
+        glVertex3f(-ROAD_WIDTH / 2 - 1500, player_pos[1] - ROAD_LENGTH / 2, -10)
+        glVertex3f(-ROAD_WIDTH / 2 - 1000, player_pos[1] - ROAD_LENGTH / 2, -10)
+        glVertex3f(-ROAD_WIDTH / 2 - 1000, player_pos[1] + ROAD_LENGTH / 2, -10)
+        glVertex3f(-ROAD_WIDTH / 2 - 1500, player_pos[1] + ROAD_LENGTH / 2, -10)
+        glEnd()
+        glBegin(GL_QUADS)
+        glColor3f(0.4, 0.6, 0.2)
+        glNormal3f(0, 0, 1)
+        glVertex3f(ROAD_WIDTH / 2, player_pos[1] - ROAD_LENGTH / 2, 0)
+        glVertex3f(ROAD_WIDTH / 2 + 1000, player_pos[1] - ROAD_LENGTH / 2, 0)
+        glVertex3f(ROAD_WIDTH / 2 + 1000, player_pos[1] + ROAD_LENGTH / 2, 0)
+        glVertex3f(ROAD_WIDTH / 2, player_pos[1] + ROAD_LENGTH / 2, 0)
+        glEnd()
+        hill_spacing = 500
+        y_start = math.floor((player_pos[1] - 1000) / hill_spacing) * hill_spacing
+        for i in range(10):
+            hill_y = y_start + i * hill_spacing
+            glBegin(GL_TRIANGLES)
+            glColor3f(0.3, 0.5, 0.1)
+            glNormal3f(0, 0, 1)
+            glVertex3f(ROAD_WIDTH / 2 + 200, hill_y, 0)
+            glVertex3f(ROAD_WIDTH / 2 + 600, hill_y, 200)
+            glVertex3f(ROAD_WIDTH / 2 + 1000, hill_y, 0)
+            glEnd()
+
+def draw_vehicle(x, y, z, v_type, color=(1,0,0), is_opposite=False):
+    glPushMatrix()
+    glTranslatef(x, y, z)
+    glColor3f(*color)
+    if is_opposite:
+        glRotatef(0, 0, 0, 1)
+    else:
+        glRotatef(180, 0, 0, 1)
+    if v_type in ['bus1', 'bus2']:
+        glTranslatef(0, 0, 10)
+        glScalef(10, 10, 10)
+        body_color = (1.0, 1.0, 1.0) if v_type == 'bus1' else (1.0, 0.0, 0.0)
+        glColor3f(*body_color)
+        glBegin(GL_QUADS)
+        glNormal3f(0, 0, -1)
+        glVertex3f(-2.0, 5.0, 0.0)
+        glVertex3f(2.0, 5.0, 0.0)
+        glVertex3f(2.0, -5.0, 0.0)
+        glVertex3f(-2.0, -5.0, 0.0)
+        glNormal3f(0, 0, 1)
+        glVertex3f(-2.0, 5.0, 4.8)
+        glVertex3f(2.0, 5.0, 4.8)
+        glVertex3f(2.0, -5.0, 4.8)
+        glVertex3f(-2.0, -5.0, 4.8)
+        glNormal3f(0, -1, 0)
+        glVertex3f(-2.0, -5.0, 0.0)
+        glVertex3f(2.0, -5.0, 0.0)
+        glVertex3f(2.0, -5.0, 4.8)
+        glVertex3f(-2.0, -5.0, 4.8)
+        glNormal3f(0, 1, 0)
+        glVertex3f(-2.0, 5.0, 0.0)
+        glVertex3f(2.0, 5.0, 0.0)
+        glVertex3f(2.0, 5.0, 4.8)
+        glVertex3f(-2.0, 5.0, 4.8)
+        glNormal3f(-1, 0, 0)
+        glVertex3f(-2.0, 5.0, 0.0)
+        glVertex3f(-2.0, -5.0, 0.0)
+        glVertex3f(-2.0, -5.0, 4.8)
+        glVertex3f(-2.0, 5.0, 4.8)
+        glNormal3f(1, 0, 0)
+        glVertex3f(2.0, 5.0, 0.0)
+        glVertex3f(2.0, -5.0, 0.0)
+        glVertex3f(2.0, -5.0, 4.8)
+        glVertex3f(2.0, 5.0, 4.8)
+        glEnd()
+        glColor3f(0.2, 0.2, 0.2)
+        glBegin(GL_QUADS)
+        glNormal3f(0, -1, 0.5)
+        glVertex3f(-1.8, -5.0, 3.2)
+        glVertex3f(1.8, -5.0, 3.2)
+        glVertex3f(1.8, -5.0, 4.8)
+        glVertex3f(-1.8, -5.0, 4.8)
+        glEnd()
+        glBegin(GL_QUADS)
+        glNormal3f(-1, 0, 0)
+        glVertex3f(-2.0, 2.0, 3.2)
+        glVertex3f(-2.0, -2.0, 3.2)
+        glVertex3f(-2.0, -2.0, 4.8)
+        glVertex3f(-2.0, 2.0, 4.8)
+        glNormal3f(1, 0, 0)
+        glVertex3f(2.0, 2.0, 3.2)
+        glVertex3f(2.0, -2.0, 3.2)
+        glVertex3f(2.0, -2.0, 4.8)
+        glVertex3f(2.0, 2.0, 4.8)
+        glEnd()
+        wheel_positions = [(-2.2, 3.75, 0.0), (1.8, 3.75, 0.0), (-2.2, -3.75, 0.0), (1.8, -3.75, 0.0)]
+        for wx, wy, wz in wheel_positions:
+            glPushMatrix()
+            glTranslatef(wx, wy, wz)
+            glRotatef(90, 0, 1, 0)
+            glColor3f(0.0, 0.0, 0.0)
+            gluCylinder(GLOBAL_QUADRIC, 0.5, 0.5, 0.6, 10, 10)
+            glColor3f(0.7, 0.7, 0.7)
+            gluDisk(GLOBAL_QUADRIC, 0.2, 0.5, 10, 10)
+            glTranslatef(0, 0, 0.6)
+            gluDisk(GLOBAL_QUADRIC, 0.2, 0.5, 10, 10)
+            glPopMatrix()
+        glColor3f(1.0, 1.0, 0.0)
+        glPushMatrix()
+        glTranslatef(-2.0, -5.0, 2.4)
+        gluSphere(GLOBAL_QUADRIC, 0.2, 8, 8)
+        glPopMatrix()
+        glPushMatrix()
+        glTranslatef(2.0, -5.0, 2.4)
+        gluSphere(GLOBAL_QUADRIC, 0.2, 8, 8)
+        glPopMatrix()
+        glColor3f(0.6, 0.0, 0.0)
+        glPushMatrix()
+        glTranslatef(-2.0, 5.0, 2.4)
+        gluSphere(GLOBAL_QUADRIC, 0.25, 8, 8)
+        glPopMatrix()
+        glPushMatrix()
+        glTranslatef(2.0, 5.0, 2.4)
+        gluSphere(GLOBAL_QUADRIC, 0.25, 8, 8)
+        glPopMatrix()
+    elif v_type in ['sedan1', 'sedan2', 'sedan3', 'sedan4']:
+        glPushMatrix()
+        glTranslatef(0, 0, 10)
+        glScalef(10, 10, 10)
+        body_color = (0.0, 0.0, 1.0) if v_type == 'sedan1' else (0.0, 1.0, 0.0) if v_type == 'sedan2' else (1.0, 1.0, 0.0) if v_type == 'sedan3' else (1.0, 0.5, 0.0)
+        glColor3f(*body_color)
+        glBegin(GL_QUADS)
+        glNormal3f(0, 0, -1)
+        glVertex3f(-2.0, 2.0, 0.0)
+        glVertex3f(2.0, 2.0, 0.0)
+        glVertex3f(2.0, -2.0, 0.0)
+        glVertex3f(-2.0, -2.0, 0.0)
+        glNormal3f(0, 0, 1)
+        glVertex3f(-2.0, 2.0, 1.2)
+        glVertex3f(2.0, 2.0, 1.2)
+        glVertex3f(2.0, -1.8, 0.9)
+        glVertex3f(-2.0, -1.8, 0.9)
+        glNormal3f(0, -1, 0.5)
+        glVertex3f(-2.0, -2.0, 0.0)
+        glVertex3f(2.0, -2.0, 0.0)
+        glVertex3f(2.0, -1.8, 0.9)
+        glVertex3f(-2.0, -1.8, 0.9)
+        glNormal3f(0, 1, 0)
+        glVertex3f(-2.0, 2.0, 0.0)
+        glVertex3f(2.0, 2.0, 0.0)
+        glVertex3f(2.0, 2.0, 1.2)
+        glVertex3f(-2.0, 2.0, 1.2)
+        glNormal3f(-1, 0, 0)
+        glVertex3f(-2.0, 2.0, 0.0)
+        glVertex3f(-2.0, -2.0, 0.0)
+        glVertex3f(-2.0, -1.8, 0.9)
+        glVertex3f(-2.0, 2.0, 1.2)
+        glNormal3f(1, 0, 0)
+        glVertex3f(2.0, 2.0, 0.0)
+        glVertex3f(2.0, -2.0, 0.0)
+        glVertex3f(2.0, -1.8, 0.9)
+        glVertex3f(2.0, 2.0, 1.2)
+        glEnd()
+        glPushMatrix()
+        glTranslatef(0, 0.5, 1.5)
+        glScalef(1.5, 1.0, 0.3)
+        glColor3f(0.2, 0.2, 0.2)
+        glutSolidCube(1.0)
+        glPopMatrix()
+        glColor3f(*body_color)
+        glBegin(GL_QUADS)
+        glNormal3f(0, 0, 1)
+        glVertex3f(-2.0, 2.0, 1.4)
+        glVertex3f(2.0, 2.0, 1.4)
+        glVertex3f(2.0, 2.2, 1.6)
+        glVertex3f(-2.0, 2.2, 1.6)
+        glEnd()
+        wheel_positions = [(-2.2, 1.5, 0.0), (1.8, 1.5, 0.0), (-2.2, -1.5, 0.0), (1.8, -1.5, 0.0)]
+        for wx, wy, wz in wheel_positions:
+            glPushMatrix()
+            glTranslatef(wx, wy, wz)
+            glRotatef(90, 0, 1, 0)
+            glColor3f(0.0, 0.0, 0.0)
+            gluCylinder(GLOBAL_QUADRIC, 0.5, 0.5, 0.6, 10, 10)
+            glColor3f(0.7, 0.7, 0.7)
+            gluDisk(GLOBAL_QUADRIC, 0.2, 0.5, 10, 10)
+            glTranslatef(0, 0, 0.6)
+            gluDisk(GLOBAL_QUADRIC, 0.2, 0.5, 10, 10)
+            glPopMatrix()
+        glColor3f(1.0, 1.0, 0.0)
+        glPushMatrix()
+        glTranslatef(-2.0, -1.8, 0.9)
+        gluSphere(GLOBAL_QUADRIC, 0.2, 8, 8)
+        glPopMatrix()
+        glPushMatrix()
+        glTranslatef(2.0, -1.8, 0.9)
+        gluSphere(GLOBAL_QUADRIC, 0.2, 8, 8)
+        glPopMatrix()
+        glColor3f(0.6, 0.0, 0.0)
+        glPushMatrix()
+        glTranslatef(-2.0, 1.8, 0.9)
+        gluSphere(GLOBAL_QUADRIC, 0.25, 8, 8)
+        glPopMatrix()
+        glPushMatrix()
+        glTranslatef(2.0, 1.8, 0.9)
+        gluSphere(GLOBAL_QUADRIC, 0.25, 8, 8)
+        glPopMatrix()
+        glColor3f(0.3, 0.3, 0.3)
+        glBegin(GL_QUADS)
+        glNormal3f(0, -1, 0)
+        glVertex3f(-1.0, -2.0, 0.2)
+        glVertex3f(1.0, -2.0, 0.2)
+        glVertex3f(1.0, -2.0, 0.4)
+        glVertex3f(-1.0, -2.0, 0.4)
+        glEnd()
+        glColor3f(*body_color)
+        glPushMatrix()
+        glTranslatef(-2.6, 0.0, 0.6)
+        glScalef(0.3, 0.2, 0.2)
+        glutSolidCube(1.0)
+        glPopMatrix()
+        glPushMatrix()
+        glTranslatef(2.6, 0.0, 0.6)
+        glScalef(0.3, 0.2, 0.2)
+        glutSolidCube(1.0)
+        glPopMatrix()
+        glPopMatrix()
+    elif v_type in ['truck1', 'truck2']:
+        glPushMatrix()
+        glTranslatef(0, 0, 10)
+        glScalef(10, 10, 10)
+        body_color = (0.5, 1.0, 1.0) if v_type == 'truck1' else (0.5, 0.0, 0.5)
+        glColor3f(*body_color)
+        glBegin(GL_QUADS)
+        glNormal3f(0, 0, -1)
+        glVertex3f(-2.0, 1.5, 0.0)
+        glVertex3f(2.0, 1.5, 0.0)
+        glVertex3f(2.0, -1.5, 0.0)
+        glVertex3f(-2.0, -1.5, 0.0)
+        glNormal3f(0, 0, 1)
+        glVertex3f(-2.0, 1.5, 4.8)
+        glVertex3f(2.0, 1.5, 4.8)
+        glVertex3f(2.0, -1.5, 4.8)
+        glVertex3f(-2.0, -1.5, 4.8)
+        glNormal3f(0, -1, 0)
+        glVertex3f(-2.0, -1.5, 0.0)
+        glVertex3f(2.0, -1.5, 0.0)
+        glVertex3f(2.0, -1.5, 4.8)
+        glVertex3f(-2.0, -1.5, 4.8)
+        glNormal3f(0, 1, 0)
+        glVertex3f(-2.0, 1.5, 0.0)
+        glVertex3f(2.0, 1.5, 0.0)
+        glVertex3f(2.0, 1.5, 4.8)
+        glVertex3f(-2.0, 1.5, 4.8)
+        glNormal3f(-1, 0, 0)
+        glVertex3f(-2.0, 1.5, 0.0)
+        glVertex3f(-2.0, -1.5, 0.0)
+        glVertex3f(-2.0, -1.5, 4.8)
+        glVertex3f(-2.0, 1.5, 4.8)
+        glNormal3f(1, 0, 0)
+        glVertex3f(2.0, 1.5, 0.0)
+        glVertex3f(2.0, -1.5, 0.0)
+        glVertex3f(2.0, -1.5, 4.8)
+        glVertex3f(2.0, 1.5, 4.8)
+        glEnd()
+        glColor3f(0.5, 0.5, 0.5)
+        glBegin(GL_QUADS)
+        glNormal3f(0, 0, -1)
+        glVertex3f(-2.0, 4.5, 0.0)
+        glVertex3f(2.0, 4.5, 0.0)
+        glVertex3f(2.0, 1.5, 0.0)
+        glVertex3f(-2.0, 1.5, 0.0)
+        glNormal3f(0, 0, 1)
+        glVertex3f(-2.0, 4.5, 3.2)
+        glVertex3f(2.0, 4.5, 3.2)
+        glVertex3f(2.0, 1.5, 3.2)
+        glVertex3f(-2.0, 1.5, 3.2)
+        glNormal3f(0, -1, 0)
+        glVertex3f(-2.0, 1.5, 0.0)
+        glVertex3f(2.0, 1.5, 0.0)
+        glVertex3f(2.0, 1.5, 3.2)
+        glVertex3f(-2.0, 1.5, 3.2)
+        glNormal3f(0, 1, 0)
+        glVertex3f(-2.0, 4.5, 0.0)
+        glVertex3f(2.0, 4.5, 0.0)
+        glVertex3f(2.0, 4.5, 3.2)
+        glVertex3f(-2.0, 4.5, 3.2)
+        glNormal3f(-1, 0, 0)
+        glVertex3f(-2.0, 4.5, 0.0)
+        glVertex3f(-2.0, 1.5, 0.0)
+        glVertex3f(-2.0, 1.5, 3.2)
+        glVertex3f(-2.0, 4.5, 3.2)
+        glNormal3f(1, 0, 0)
+        glVertex3f(2.0, 4.5, 0.0)
+        glVertex3f(2.0, 1.5, 0.0)
+        glVertex3f(2.0, 1.5, 3.2)
+        glVertex3f(2.0, 4.5, 3.2)
+        glEnd()
+        glColor3f(0.2, 0.2, 0.2)
+        glBegin(GL_QUADS)
+        glNormal3f(0, -1, 0.5)
+        glVertex3f(-1.8, -1.5, 3.2)
+        glVertex3f(1.8, -1.5, 3.2)
+        glVertex3f(1.8, -1.5, 4.8)
+        glVertex3f(-1.8, -1.5, 4.8)
+        glEnd()
+        glBegin(GL_QUADS)
+        glNormal3f(-1, 0, 0)
+        glVertex3f(-2.0, 1.5, 3.2)
+        glVertex3f(-2.0, -1.5, 3.2)
+        glVertex3f(-2.0, -1.5, 4.8)
+        glVertex3f(-2.0, 1.5, 4.8)
+        glNormal3f(1, 0, 0)
+        glVertex3f(2.0, 1.5, 3.2)
+        glVertex3f(2.0, -1.5, 3.2)
+        glVertex3f(2.0, -1.5, 4.8)
+        glVertex3f(2.0, 1.5, 4.8)
+        glEnd()
+        wheel_positions = [(-2.2, 1.0, 0.0), (1.8, 1.0, 0.0), (-2.2, -1.0, 0.0), (1.8, -1.0, 0.0), (-2.2, 4.0, 0.0), (1.8, 4.0, 0.0), (-2.2, 3.5, 0.0), (1.8, 3.5, 0.0)]
+        for wx, wy, wz in wheel_positions:
+            glPushMatrix()
+            glTranslatef(wx, wy, wz)
+            glRotatef(90, 0, 1, 0)
+            glColor3f(0.0, 0.0, 0.0)
+            gluCylinder(GLOBAL_QUADRIC, 0.5, 0.5, 0.6, 10, 10)
+            glColor3f(0.7, 0.7, 0.7)
+            gluDisk(GLOBAL_QUADRIC, 0.2, 0.5, 10, 10)
+            glTranslatef(0, 0, 0.6)
+            gluDisk(GLOBAL_QUADRIC, 0.2, 0.5, 10, 10)
+            glPopMatrix()
+        glColor3f(1.0, 1.0, 0.0)
+        glPushMatrix()
+        glTranslatef(-2.0, -1.5, 2.4)
+        gluSphere(GLOBAL_QUADRIC, 0.2, 8, 8)
+        glPopMatrix()
+        glPushMatrix()
+        glTranslatef(2.0, -1.5, 2.4)
+        gluSphere(GLOBAL_QUADRIC, 0.2, 8, 8)
+        glPopMatrix()
+        glColor3f(0.6, 0.0, 0.0)
+        glPushMatrix()
+        glTranslatef(-2.0, 4.5, 1.6)
+        gluSphere(GLOBAL_QUADRIC, 0.25, 8, 8)
+        glPopMatrix()
+        glPushMatrix()
+        glTranslatef(2.0, 4.5, 1.6)
+        gluSphere(GLOBAL_QUADRIC, 0.25, 8, 8)
+        glPopMatrix()
+        glPopMatrix()
+    glPopMatrix()
+
+def draw_player_car(x, y, z):
+    glPushMatrix()
+    glTranslatef(x, y, z)
+    glRotatef(180, 0, 0, 1)
+    glPushMatrix()
+    glTranslatef(0, 0, 10)
+    glScalef(10, 10, 10)
+    body_color = (0.0, 0.0, 1.0)
+    glColor3f(*body_color)
+    glBegin(GL_QUADS)
+    glNormal3f(0, 0, -1)
+    glVertex3f(-2.0, 2.0, 0.0)
+    glVertex3f(2.0, 2.0, 0.0)
+    glVertex3f(2.0, -2.0, 0.0)
+    glVertex3f(-2.0, -2.0, 0.0)
+    glNormal3f(0, 0, 1)
+    glVertex3f(-2.0, 2.0, 1.2)
+    glVertex3f(2.0, 2.0, 1.2)
+    glVertex3f(2.0, -1.8, 0.9)
+    glVertex3f(-2.0, -1.8, 0.9)
+    glNormal3f(0, -1, 0.5)
+    glVertex3f(-2.0, -2.0, 0.0)
+    glVertex3f(2.0, -2.0, 0.0)
+    glVertex3f(2.0, -1.8, 0.9)
+    glVertex3f(-2.0, -1.8, 0.9)
+    glNormal3f(0, 1, 0)
+    glVertex3f(-2.0, 2.0, 0.0)
+    glVertex3f(2.0, 2.0, 0.0)
+    glVertex3f(2.0, 2.0, 1.2)
+    glVertex3f(-2.0, 2.0, 1.2)
+    glNormal3f(-1, 0, 0)
+    glVertex3f(-2.0, 2.0, 0.0)
+    glVertex3f(-2.0, -2.0, 0.0)
+    glVertex3f(-2.0, -1.8, 0.9)
+    glVertex3f(-2.0, 2.0, 1.2)
+    glNormal3f(1, 0, 0)
+    glVertex3f(2.0, 2.0, 0.0)
+    glVertex3f(2.0, -2.0, 0.0)
+    glVertex3f(2.0, -1.8, 0.9)
+    glVertex3f(2.0, 2.0, 1.2)
+    glEnd()
+    glPushMatrix()
+    glTranslatef(0, 0.5, 1.5)
+    glScalef(1.5, 1.0, 0.3)
+    glColor3f(0.2, 0.2, 0.2)
+    glutSolidCube(1.0)
+    glPopMatrix()
+    glColor3f(*body_color)
+    glBegin(GL_QUADS)
+    glNormal3f(0, 0, 1)
+    glVertex3f(-2.0, 2.0, 1.4)
+    glVertex3f(2.0, 2.0, 1.4)
+    glVertex3f(2.0, 2.2, 1.6)
+    glVertex3f(-2.0, 2.2, 1.6)
+    glEnd()
+    wheel_positions = [(-2.2, 1.5, 0.0), (1.8, 1.5, 0.0), (-2.2, -1.5, 0.0), (1.8, -1.5, 0.0)]
+    for wx, wy, wz in wheel_positions:
+        glPushMatrix()
+        glTranslatef(wx, wy, wz)
+        glRotatef(90, 0, 1, 0)
+        glColor3f(0.0, 0.0, 0.0)
+        gluCylinder(GLOBAL_QUADRIC, 0.5, 0.5, 0.6, 10, 10)
+        glColor3f(0.7, 0.7, 0.7)
+        gluDisk(GLOBAL_QUADRIC, 0.2, 0.5, 10, 10)
+        glTranslatef(0, 0, 0.6)
+        gluDisk(GLOBAL_QUADRIC, 0.2, 0.5, 10, 10)
+        glPopMatrix()
+    glColor3f(1.0, 1.0, 0.0)
+    glPushMatrix()
+    glTranslatef(-2.0, -1.8, 0.9)
+    gluSphere(GLOBAL_QUADRIC, 0.2, 8, 8)
+    glPopMatrix()
+    glPushMatrix()
+    glTranslatef(2.0, -1.8, 0.9)
+    gluSphere(GLOBAL_QUADRIC, 0.2, 8, 8)
+    glPopMatrix()
+    glColor3f(0.6, 0.0, 0.0)
+    glPushMatrix()
+    glTranslatef(-2.0, 1.8, 0.9)
+    gluSphere(GLOBAL_QUADRIC, 0.25, 8, 8)
+    glPopMatrix()
+    glPushMatrix()
+    glTranslatef(2.0, 1.8, 0.9)
+    gluSphere(GLOBAL_QUADRIC, 0.25, 8, 8)
+    glPopMatrix()
+    glColor3f(0.3, 0.3, 0.3)
+    glBegin(GL_QUADS)
+    glNormal3f(0, -1, 0)
+    glVertex3f(-1.0, -2.0, 0.2)
+    glVertex3f(1.0, -2.0, 0.2)
+    glVertex3f(1.0, -2.0, 0.4)
+    glVertex3f(-1.0, -2.0, 0.4)
+    glEnd()
+    glColor3f(*body_color)
+    glPushMatrix()
+    glTranslatef(-2.6, 0.0, 0.6)
+    glScalef(0.3, 0.2, 0.2)
+    glutSolidCube(1.0)
+    glPopMatrix()
+    glPushMatrix()
+    glTranslatef(2.6, 0.0, 0.6)
+    glScalef(0.3, 0.2, 0.2)
+    glutSolidCube(1.0)
+    glPopMatrix()
+    if boost_active:
+        draw_boost_flames()
+    glPopMatrix()
+    glPopMatrix()
+
+def draw_boost_flames():
+    glPushAttrib(GL_ENABLE_BIT | GL_COLOR_BUFFER_BIT)
+    glDisable(GL_LIGHTING)
+    glEnable(GL_BLEND)
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE)
+    flicker = 0.8 + 0.2 * math.sin(time_elapsed * 20.0)
+    length = 50.0 * flicker
+    width = 12.0 * flicker
+    for side in [-1, 1]:
+        glPushMatrix()
+        glTranslatef(side * 14, -48, 0)
+        glBegin(GL_TRIANGLES)
+        glColor4f(1.0, 0.9, 0.3, 0.9)
+        glVertex3f(0, 0, 6)
+        glColor4f(1.0, 0.6, 0.0, 0.6)
+        glVertex3f(-side * width * 0.4, -length * 0.6, 2)
+        glVertex3f(side * width * 0.4, -length * 0.6, 2)
+        glEnd()
+        glBegin(GL_TRIANGLES)
+        glColor4f(1.0, 0.5, 0.0, 0.5)
+        glVertex3f(0, -5, 4)
+        glColor4f(1.0, 0.2, 0.0, 0.3)
+        glVertex3f(-side * width, -length, 0)
+        glVertex3f(side * width, -length, 0)
+        glEnd()
+        glPopMatrix()
+    glPopAttrib()
+
+def get_vehicle_bounds(v_type):
+    if v_type in ['bus1', 'bus2']:
+        return {'width': 2.0 * 10, 'length': 5.0 * 10}
+    elif v_type in ['sedan1', 'sedan2', 'sedan3', 'sedan4']:
+        return {'width': 2.0 * 10, 'length': 2.0 * 10}
+    elif v_type in ['truck1', 'truck2']:
+        return {'width': 2.0 * 10, 'length': (1.5 + 3.0) * 10}
+    return {'width': 2.0 * 10, 'length': 2.0 * 10}
+
+def check_collision():
+    global game_over
+    player_half_w = 20
+    player_half_l = 20
+    for car in cars:
+        car_half_w = get_vehicle_bounds(car['type'])['width'] / 2
+        car_half_l = get_vehicle_bounds(car['type'])['length'] / 2
+        if abs(player_pos[0] - car['x']) < (player_half_w + car_half_w) and abs(player_pos[1] - car['y']) < (player_half_l + car_half_l):
+            game_over = True
+            return True
+    return False
+
+def can_spawn_car(lane_idx, y_pos, is_opposite):
+    min_gap = 300
+    for car in cars:
+        if car['is_opposite'] == is_opposite and abs(car['x'] - lanes[lane_idx]) < 10:
+            if abs(car['y'] - y_pos) < min_gap:
+                return False
+    return True
+
+def keyboardListener(key, x, y):
+    global player_lane, player_pos, accelerating, decelerating, paused, camera_mode, boost_active, fuel_amount, fuel_refill_timer, game_over, current_environment
+    if game_over:
+        if key == b'r':
+            reset_game()
+        elif key == b'q':
+            glutLeaveMainLoop()
+        return
+    if key == b'a':
+        if player_lane > 0:
+            player_lane -= 1
+    if key == b'd':
+        if player_lane < 3:
+            player_lane += 1
+    if key == b'p':
+        paused = not paused
+    if key == b'1':
+        camera_mode = 1
+    if key == b'2':
+        camera_mode = 2
+    if key == b'3':
+        camera_mode = 3
+    if key == b'w':
+        accelerating = True
+    if key == b's':
+        decelerating = True
+    if key == b'b':
+        if not boost_active and fuel_amount > 0.0 and fuel_refill_timer <= 0.0:
+            boost_active = True
+    if key == b'c':
+        current_environment = "marine_drive"
+    elif key == b'x':
+        current_environment = "desert"
+    elif key == b'z':
+        current_environment = "ice_hill"
+    elif key == b'n':
+        current_environment = "night_rain"
+    player_pos[0] = lanes[player_lane]
+
+def keyboardUpListener(key, x, y):
+    global accelerating, decelerating
+    if key == b'w':
+        accelerating = False
+    if key == b's':
+        decelerating = False
+
+def specialKeyListener(key, x, y):
+    pass
+
+def mouseListener(button, state, x, y):
+    pass
+
+def setupCamera():
+    glMatrixMode(GL_PROJECTION)
+    glLoadIdentity()
+    gluPerspective(fovY, 1.25, 0.1, ROAD_LENGTH * 2)
+    glMatrixMode(GL_MODELVIEW)
+    glLoadIdentity()
+    if camera_mode == 1:
+        cx = player_pos[0] + camera_offset[0]
+        cy = player_pos[1] + camera_offset[1]
+        cz = player_pos[2] + camera_offset[2]
+        tx = player_pos[0]
+        ty = player_pos[1] + 200
+        tz = 10
+    elif camera_mode == 2:
+        cx = player_pos[0]
+        cy = player_pos[1] + 50
+        cz = 20
+        tx = player_pos[0]
+        ty = player_pos[1] + 300
+        tz = 10
+    elif camera_mode == 3:
+        cx = player_pos[0]
+        cy = player_pos[1] - 200
+        cz = 70
+        tx = player_pos[0]
+        ty = player_pos[1] - 300
+        tz = 10
+    gluLookAt(cx, cy, cz, tx, ty, tz, 0, 0, 1)
+
+def reset_game():
+    global player_lane, player_pos, cars, time_elapsed, next_spawn, last_time, distance_traveled, score, player_speed, boost_active, fuel_amount, fuel_refill_timer, game_over, current_environment, environment_change_time
+    player_lane = 0
+    player_pos = [lanes[0], -ROAD_LENGTH / 2 + 500, 0]
+    cars = []
+    time_elapsed = 0.0
+    next_spawn = random.uniform(0.5, 1.5)
+    last_time = None
+    distance_traveled = 0.0
+    score = 0
+    player_speed = 40.0
+    boost_active = False
+    fuel_amount = fuel_capacity
+    fuel_refill_timer = 0.0
+    game_over = False
+    current_environment = "marine_drive"
+    environment_change_time = 0.0
+    init_lighting()
+
+def idle():
+    global last_time, time_elapsed, next_spawn, distance_traveled, player_pos, cars, player_speed, accelerating, decelerating, paused, score, high_score, boost_active, fuel_amount, fuel_refill_timer, game_over, current_environment, environment_change_time
+    if paused or game_over:
+        glutPostRedisplay()
+        return
+    if last_time is None:
+        last_time = time.time()
+    current = time.time()
+    dt = current - last_time
+    last_time = current
+    time_elapsed += dt
+    environment_change_time += dt
+    if environment_change_time >= environment_duration:
+        environments = ["marine_drive", "ice_hill", "desert", "night_rain"]
+        environments.remove(current_environment)
+        current_environment = random.choice(environments)
+        environment_change_time = 0.0
+        init_lighting()
+    if boost_active:
+        fuel_amount -= fuel_drain_rate * dt
+        if fuel_amount <= 0.0:
+            fuel_amount = 0.0
+            boost_active = False
+            fuel_refill_timer = fuel_refill_delay
+    else:
+        if fuel_amount <= 0.0 and fuel_refill_timer > 0.0:
+            fuel_refill_timer -= dt
+            if fuel_refill_timer <= 0.0:
+                fuel_amount = fuel_capacity
+    effective_speed = player_speed * (boost_multiplier if boost_active else 1.0)
+    if accelerating:
+        player_speed += acceleration_rate * dt
+        if player_speed > max_speed:
+            player_speed = max_speed
+    elif decelerating:
+        player_speed -= deceleration_rate * dt
+        if player_speed < min_speed:
+            player_speed = min_speed
+    distance_traveled += effective_speed * dt
+    score += effective_speed * dt / 100
+    high_score = max(high_score, score)
+    if time_elapsed > next_spawn:
+        lane_idx = random.randint(0, 3)
+        car_x = lanes[lane_idx]
+        is_opposite = lane_idx in [2, 3]
+        if is_opposite:
+            car_y = player_pos[1] + ROAD_LENGTH / 2 + random.uniform(0, 500)
+            car_speed = 200 + (time_elapsed / 60) * 50
+        else:
+            car_y = player_pos[1] + 1500 + random.uniform(0, 500)
+            car_speed = 150 + (time_elapsed / 60) * 50
+        if can_spawn_car(lane_idx, car_y, is_opposite):
+            car_type = random.choice(car_types)
+            car_color = random.choice(colors)
+            cars.append({'x': car_x, 'y': car_y, 'speed': car_speed, 'type': car_type, 'color': car_color, 'is_opposite': is_opposite})
+            next_spawn = time_elapsed + random.uniform(1.0, 2.0 - min(time_elapsed / 300, 1.0))
+    for car in cars[:]:
+        if car['is_opposite']:
+            car['y'] -= (car['speed'] + effective_speed) * dt
+        else:
+            car['y'] -= (car['speed'] - effective_speed) * dt
+        if car['y'] < player_pos[1] - ROAD_LENGTH / 2 - 1000 or car['y'] > player_pos[1] + ROAD_LENGTH / 2 + 1000:
+            cars.remove(car)
+    player_pos[1] += effective_speed * dt
+    glLightfv(GL_LIGHT0, GL_POSITION, (0, player_pos[1] + 1000, 500, 1))
+    if check_collision():
+        game_over = True
+    glutPostRedisplay()
+
+def showScreen():
+    if current_environment == "night_rain":
+        glClearColor(0.1, 0.1, 0.15, 1.0)
+    else:
+        glClearColor(0.5, 0.8, 1.0, 1.0)
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+    glLoadIdentity()
+    glViewport(0, 0, 1000, 800)
+    setupCamera()
+    draw_environment()
+    draw_road()
+    for car in cars:
+        draw_vehicle(car['x'], car['y'], 0, car['type'], car['color'], car['is_opposite'])
+    if not game_over:
+        draw_player_car(player_pos[0], player_pos[1], 0)
+    current_speed = player_speed * (boost_multiplier if boost_active else 1.0)
+    draw_text(10, 770, f"Speed: {current_speed:.1f} km/h")
+    draw_text(10, 740, f"Distance: {distance_traveled / 1000:.1f} km")
+    draw_text(10, 710, f"Score: {int(score)}")
+    draw_text(10, 680, f"High Score: {int(high_score)}")
+    draw_text(10, 650, f"Camera: {'Third-person' if camera_mode == 1 else 'First-person' if camera_mode == 2 else 'Rear view'}")
+    draw_text(10, 620, f"{'Paused' if paused else 'Running'}")
+    draw_text(10, 590, f"Boost: {'BOOSTING' if boost_active else 'REFILLING' if fuel_amount <= 0.0 and fuel_refill_timer > 0.0 else 'READY'} | Fuel: {fuel_amount:.0f}/{fuel_capacity:.0f}")
+    draw_text(10, 560, f"Environment: {current_environment.replace('_', ' ').title()}")
+    if game_over:
+        draw_text(350, 400, "Game Over! Press 'R' to restart or 'Q' to quit")
+    glutSwapBuffers()
+
+def main():
+    global last_time, GLOBAL_QUADRIC
+    last_time = None
+    glutInit(sys.argv)
+    glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH)
+    glutInitWindowSize(1000, 800)
+    glutInitWindowPosition(0, 0)
+    glutCreateWindow(b"Highway Havoc")
+    glutDisplayFunc(showScreen)
+    glutKeyboardFunc(keyboardListener)
+    glutKeyboardUpFunc(keyboardUpListener)
+    glutSpecialFunc(specialKeyListener)
+    glutMouseFunc(mouseListener)
+    glutIdleFunc(idle)
+    glEnable(GL_DEPTH_TEST)
+    glEnable(GL_LIGHTING)
+    glEnable(GL_LIGHT0)
+    init_lighting()
+    GLOBAL_QUADRIC = gluNewQuadric()
+    if GLOBAL_QUADRIC:
+        gluQuadricNormals(GLOBAL_QUADRIC, GLU_SMOOTH)
+    glutMainLoop()
+
+if __name__ == "__main__":
+    main()
